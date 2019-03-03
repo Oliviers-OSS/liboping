@@ -252,6 +252,18 @@ if test "$enable_effective_cap" = "yes"; then
         AC_DEFINE(_EFFECTIVE_CAPABILITIES_MANAGEMENT_, 1, [Defined if the effective capabilities management is enabled.])               
 fi
 
+AC_ARG_ENABLE(linux-payload,
+        [  --enable-linux-payload enable linux ping default payload, else original liboping payload will be used (default is yes) ],
+        [case "${enableval}" in
+         yes) enable_linux_payload="yes";;
+          no) enable_linux_payload="no" ;;
+           *) AC_MSG_ERROR(bad value ${enableval} for --enable-linux-payload);;
+         esac],
+        [enable_linux_payload="yes"]
+)
+if test "$enable_linux_payload" = "yes"; then
+        AC_DEFINE(_LINUX_DEFAULT_PAYLOAD_, 1, [Defined if the default payload is the Linux's / GNU ping one.])               
+fi
 
 AC_ARG_WITH(perl-bindings, [AS_HELP_STRING([--with-perl-bindings@<:@=OPTIONS@:>@], [Options passed to "perl Makefile.PL".])],
 [

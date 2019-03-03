@@ -132,6 +132,7 @@ struct pinghost
 
 	struct pinghost         *next;
 	struct pinghost         *table_next;
+	size_t					datalen;
 };
 
 struct pingobj
@@ -157,6 +158,7 @@ struct pingobj
 
 	pinghost_t              *head;
 	pinghost_t              *table[PING_TABLE_LEN];
+	size_t					datalen;
 };
 
 /*
@@ -684,10 +686,10 @@ static int ping_send_one_ipv4 (pingobj_t *obj, pinghost_t *ph, int fd)
 	int status;
 
 	char   buf[4096] = {0};
-	size_t buflen;
+	size_t buflen = 0;
 
-	char *data;
-	size_t datalen;
+	char *data = NULL;
+	size_t datalen = 0;
 
 	dprintf ("ph->hostname = %s\n", ph->hostname);
 
@@ -698,7 +700,7 @@ static int ping_send_one_ipv4 (pingobj_t *obj, pinghost_t *ph, int fd)
 		.icmp_seq  = htons (ph->sequence),
 	};
 
-	datalen = strlen (ph->data);
+	datalen = ph->datalen;
 	buflen = ICMP_MINLEN + datalen;
 	if (sizeof (buf) < buflen)
 		return (EINVAL);
@@ -730,8 +732,8 @@ static int ping_send_one_ipv6 (pingobj_t *obj, pinghost_t *ph, int fd)
 	char buf[4096] = {0};
 	int  buflen;
 
-	char *data;
-	int   datalen;
+	char *data = NULL;
+	int   datalen = 0;
 
 	dprintf ("ph->hostname = %s\n", ph->hostname);
 
@@ -742,7 +744,7 @@ static int ping_send_one_ipv6 (pingobj_t *obj, pinghost_t *ph, int fd)
 		.icmp6_seq   = htons (ph->sequence),
 	};
 
-	datalen = strlen (ph->data);
+	datalen = ph->datalen;
 	buflen = sizeof (*icmp6) + datalen;
 	if (sizeof (buf) < buflen)
 		return (EINVAL);
@@ -955,6 +957,8 @@ static pinghost_t *ping_alloc (void)
 	ph->latency = -1.0;
 	ph->dropped = 0;
 	ph->ident   = ping_get_ident () & 0xFFFF;
+	ph->data = NULL;
+	ph->datalen = 0;
 
 	return (ph);
 }
@@ -1169,6 +1173,37 @@ static int ping_open_socket(pingobj_t *obj, int addrfam)
 	return fd;
 }
 
+static const size_t ping_linux_payload_size = 56;
+
+static char *ping_linux_payload(pingobj_t *obj)
+{
+	char *payload = (char *)malloc(ping_linux_payload_size);
+	if (payload)
+	{
+		const char* const limit  = payload + ping_linux_payload_size;
+		register size_t offset = 0;
+		struct timeval tv;
+		if (gettimeofday(&tv,NULL) == 0)
+		{
+			memcpy(payload,&tv,sizeof(tv));
+			offset = sizeof(tv);
+		}
+		else
+		{
+			const int error = errno;
+			ping_set_errno (obj, error);
+			dprintf ("gettimeofday error %d\n",error);
+		}
+		for(register char *p = payload + offset; p < limit; *p = offset, offset++, p++);
+	}
+	else
+	{
+		ping_set_errno (obj, ENOMEM);
+		dprintf ("ping_linux_payload failed to allocate %zu bytes\n",ping_linux_payload_size);
+	}
+	return payload;
+}
+
 /*
  * public methods
  */
@@ -1190,7 +1225,13 @@ pingobj_t *ping_construct (void)
 	obj->timeout    = PING_DEF_TIMEOUT;
 	obj->ttl        = PING_DEF_TTL;
 	obj->addrfamily = PING_DEF_AF;
+#ifndef _LINUX_DEFAULT_PAYLOAD_
 	obj->data       = strdup (PING_DEF_DATA);
+	obj->datalen    = strlen(obj->data);
+#else
+	obj->data       = ping_linux_payload(obj);
+	obj->datalen    = ping_linux_payload_size;
+#endif
 	obj->qos        = 0;
 	obj->fd4        = -1;
 	obj->fd6        = -1;
@@ -1291,6 +1332,7 @@ int ping_setopt (pingobj_t *obj, int option, void *value)
 				obj->data = NULL;
 			}
 			obj->data = strdup ((const char *) value);
+			obj->datalen = strlen(obj->data);
 			break;
 
 		case PING_OPT_SOURCE:
@@ -1624,7 +1666,28 @@ int ping_host_add (pingobj_t *obj, const char *host)
 	}
 
 	/* obj->data is not garuanteed to be != NULL */
-	if ((ph->data = strdup (obj->data == NULL ? PING_DEF_DATA : obj->data)) == NULL)
+#ifndef _LINUX_DEFAULT_PAYLOAD_
+	ph->data = strdup (obj->data == NULL ? PING_DEF_DATA : obj->data);
+#else
+	if (obj->data)
+	{
+		ph->data = (char*)malloc(obj->datalen);
+		if (ph->data)
+		{
+			memcpy(ph->data,obj->data,obj->datalen);
+			ph->datalen = obj->datalen;
+		}
+	}
+	else
+	{
+		ph->data = ping_linux_payload(obj);
+		if (ph->data)
+		{
+			ph->datalen = ping_linux_payload_size;
+		}
+	}
+#endif
+	if (ph->data == NULL)
 	{
 		dprintf ("Out of memory!\n");
 		ping_set_errno (obj, errno);
